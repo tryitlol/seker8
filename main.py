@@ -257,6 +257,12 @@ def _test_proxy_sync(line: str, timeout: int = 10) -> tuple:
 
 
 # ════════════════════════════════════════════
+#  SESSION ROTATION (ANTI-BLOCK)
+# ════════════════════════════════════════════
+SESSION_ROTATE_EVERY = 1000   # global processed
+SESSION_ROTATE_SLEEP = 3     # seconds
+
+# ════════════════════════════════════════════
 #  CONFIG
 # ════════════════════════════════════════════
 DEFAULT_CONFIG = {
@@ -567,19 +573,65 @@ def track(uid: str, mid: int):
 # ════════════════════════════════════════════
 #  USER HELPERS
 # ════════════════════════════════════════════
-def get_or_create_user(uid,username="",first_name=""):
+def get_or_create_user(uid, username="", first_name=""):
     users = load_users()
+
     if uid not in users:
-        users[uid] = {"username":username,"first_name":first_name,"banned":False,
-                      "vip":False,"activated":False,"total_checked":0,"sessions_count":0,
-                      "sessions_since_cd":0,"last_cd_at":None,"key_used":None,
-                      "key_expires_at":None,"joined":datetime.now().isoformat(),
-                      "last_seen":datetime.now().isoformat()}
+
+        users[uid] = {
+            "username": username,
+            "first_name": first_name,
+
+            "banned": False,
+            "vip": False,
+            "activated": False,
+
+            # existing stats
+            "total_checked": 0,
+            "sessions_count": 0,
+            "sessions_since_cd": 0,
+            "last_cd_at": None,
+
+            # key system
+            "key_used": None,
+            "key_expires_at": None,
+
+            # timestamps
+            "joined": datetime.now().isoformat(),
+            "last_seen": datetime.now().isoformat()
+        }
+
     else:
-        if username:   users[uid]["username"]   = username
-        if first_name: users[uid]["first_name"] = first_name
-        users[uid]["last_seen"] = datetime.now().isoformat()
+
+        user = users[uid]
+
+        if username:
+            user["username"] = username
+
+        if first_name:
+            user["first_name"] = first_name
+
+        user["last_seen"] = datetime.now().isoformat()
+
+        # add defaults for older accounts
+        user.setdefault("referrals", 0)
+        user.setdefault("referred_by", None)
+        user.setdefault("ref_rewarded", False)
+
+        user.setdefault("banned", False)
+        user.setdefault("vip", False)
+        user.setdefault("activated", False)
+
+        user.setdefault("total_checked", 0)
+        user.setdefault("sessions_count", 0)
+        user.setdefault("sessions_since_cd", 0)
+
+        user.setdefault("last_cd_at", None)
+        user.setdefault("key_used", None)
+        user.setdefault("key_expires_at", None)
+
     save_users(users)
+
     return users[uid], users
 
 def is_admin(uid: int, cfg: dict) -> bool:
@@ -662,42 +714,141 @@ async def in_channel(bot,uid,ch) -> bool:
         return m.status in (ChatMember.MEMBER,ChatMember.ADMINISTRATOR,ChatMember.OWNER)
     except: return False
 
-async def join_prompt(target,ch):
-    kb = InlineKeyboardMarkup([[InlineKeyboardButton("📢 Join Channel",url=f"https://t.me/{ch}")],
-                                [InlineKeyboardButton("✅ I Joined — Verify Now",callback_data="check_join")]])
-    txt = (f"🔒 <b>Channel Verification Required</b>\n\nPlease join <b>@{ch}</b> to continue using the bot.\n\nAfter joining, press <b>Verify Membership</b> below.")
-    if hasattr(target,"edit_message_text"): await target.edit_message_text(txt,reply_markup=kb,parse_mode=ParseMode.HTML)
-    else: await target.reply_text(txt,reply_markup=kb,parse_mode=ParseMode.HTML)
+async def join_prompt(target, ch):
+    kb = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton(
+                "📢 Join Channel",
+                url=f"https://t.me/{ch}"
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                "✅ I Joined — Verify Now",
+                callback_data="verify_join"
+            )
+        ]
+    ])
 
-async def gate(update,context,require_key=True):
-    tg=update.effective_user; uid=str(tg.id); cfg=load_config()
-    if is_admin(tg.id,cfg):
-        ud,u=get_or_create_user(uid,tg.username or "",tg.first_name or ""); return True,ud,u
-    ud,u=get_or_create_user(uid,tg.username or "",tg.first_name or "")
-    if ud.get("banned"):
-        await update.effective_message.reply_text("🚫 You are <b>banned</b>.",parse_mode=ParseMode.HTML); return False,None,u
-    if require_key:
-        if not ud.get("activated"):
-            await update.effective_message.reply_text("🔑 Use <code>/redeem YOUR_KEY</code>.",parse_mode=ParseMode.HTML); return False,None,u
-        if check_key_expiry(uid):
-            await update.effective_message.reply_text("⏰ <b>Key Expired.</b> Contact admin.",parse_mode=ParseMode.HTML); return False,None,load_users()
-    if cfg.get("locked") and not ud.get("vip"):
-        await update.effective_message.reply_text(
-    "🔒 <b>Maintenance Mode Enabled</b>\n\nThe bot is temporarily unavailable.",parse_mode=ParseMode.HTML); return False,None,u
-    return True,ud,u
+    txt = (
+        f"🔒 <b>Channel Verification Required</b>\n\n"
+        f"Please join <b>@{ch}</b> to continue using the bot.\n\n"
+        f"After joining, press <b>Verify Membership</b> below."
+    )
 
-async def gate_cb(query,context):
-    tg=query.from_user; uid=str(tg.id); cfg=load_config()
-    if is_admin(tg.id,cfg):
-        ud,u=get_or_create_user(uid,tg.username or "",tg.first_name or ""); return True,ud,u
-    ud,u=get_or_create_user(uid,tg.username or "",tg.first_name or "")
-    if ud.get("banned"): await query.answer("🚫 Access Restricted",show_alert=True); return False,None,u
-    if not ud.get("activated") and not is_admin(tg.id,cfg):
-        await query.answer("🔑 Use /redeem KEY!",show_alert=True); return False,None,u
-    if check_key_expiry(uid): await query.answer("⏰ Key expired!",show_alert=True); return False,None,load_users()
-    if load_config().get("locked") and not ud.get("vip"):
-        await query.answer("🔒 Bot locked!",show_alert=True); return False,None,u
-    return True,ud,u
+    try:
+        if hasattr(target, "edit_message_text"):
+            await target.edit_message_text(
+                txt,
+                reply_markup=kb,
+                parse_mode=ParseMode.HTML
+            )
+        else:
+            await target.reply_text(
+                txt,
+                reply_markup=kb,
+                parse_mode=ParseMode.HTML
+            )
+    except:
+        try:
+            await target.reply_text(
+                txt,
+                reply_markup=kb,
+                parse_mode=ParseMode.HTML
+            )
+        except:
+            pass
+
+async def gate(update, context):
+    cfg = load_config()
+
+    tg = update.effective_user
+    uid = str(tg.id)
+
+    u, created = get_or_create_user(
+        uid,
+        tg.username or "",
+        tg.first_name or ""
+    )
+
+    # ONLY admin bypass
+    if is_admin(tg.id, cfg):
+        return True, cfg, u
+
+    force_channel = (
+        cfg.get("channel_username", "")
+        .replace("@", "")
+        .strip()
+    )
+
+    if force_channel:
+
+        joined = await in_channel(
+            context.bot,
+            uid,
+            force_channel
+        )
+
+        if not joined:
+
+            await join_prompt(
+                update.effective_message,
+                force_channel
+            )
+
+            return False, None, u
+
+    return True, cfg, u
+
+
+async def gate_cb(update, context):
+    cfg = load_config()
+
+    q = update.callback_query
+    uid = str(q.from_user.id)
+
+    u, created = get_or_create_user(
+        uid,
+        q.from_user.username or "",
+        q.from_user.first_name or ""
+    )
+
+    # ONLY admin bypass
+    if is_admin(q.from_user.id, cfg):
+        return True, cfg, u
+
+    force_channel = (
+        cfg.get("channel_username", "")
+        .replace("@", "")
+        .strip()
+    )
+
+    if force_channel:
+
+        joined = await in_channel(
+            context.bot,
+            uid,
+            force_channel
+        )
+
+        if not joined:
+
+            try:
+                await q.answer(
+                    "❌ Join the channel first.",
+                    show_alert=True
+                )
+            except:
+                pass
+
+            await join_prompt(
+                q.message,
+                force_channel
+            )
+
+            return False, None, u
+
+    return True, cfg, u
 
 def admin_only(fn):
     @wraps(fn)
@@ -1389,6 +1540,10 @@ def run_checker(uid,combo_file,result_folder,limit,threads,stop_event,
             _idx   = 0
             _active_futs: dict = {}
 
+            # ── Session Rotation ───────────────────────
+            _rotation_target = SESSION_ROTATE_EVERY
+            _rotating = False
+
             while _idx < len(_items) or _active_futs:
                 if stop_event.is_set():
                     for f in list(_active_futs): f.cancel()
@@ -1410,10 +1565,103 @@ def run_checker(uid,combo_file,result_folder,limit,threads,stop_event,
                     list(_active_futs), return_when=_cf.FIRST_COMPLETED)
                 for f in done_futs:
                     _active_futs.pop(f, None)
-                    try: f.result()
-                    except: pass
-                # Hint GC to reclaim StringIO/session objects from completed futures
-                import gc as _gc; _gc.collect()
+
+                    try:
+                        f.result()
+                    except:
+                        pass
+
+                # ─────────────────────────────────────────────
+                # GLOBAL SESSION ROTATION EVERY 1000 PROCESSED
+                # ─────────────────────────────────────────────
+                try:
+                    current_processed = done[0]
+                except:
+                    current_processed = 0
+
+                if (
+                    not _rotating
+                    and current_processed >= _rotation_target
+                ):
+                    _rotating = True
+
+                    log.info(
+                        f"[{uid}] 🔄 Session rotation "
+                        f"({current_processed:,} processed)"
+                    )
+
+                    # 1. Flush checkpoint immediately
+                    with _ckpt_lock:
+                        _flush_checkpoint()
+
+                    # 2. Wait for running workers to finish
+                    for fut in list(_active_futs):
+                        try:
+                            fut.result(timeout=20)
+                        except:
+                            pass
+
+                    _active_futs.clear()
+
+                    # 3. Destroy sessions / cookies / datadome
+                    try:
+                        import gc as _gc
+
+                        if hasattr(_dty_module, "_thread_local"):
+                            try:
+                                _dty_module._thread_local.__dict__.clear()
+                            except:
+                                pass
+
+                        # Clear CookieManager cache
+                        try:
+                            CookieManager._instance = None
+                        except:
+                            pass
+
+                        # Clear DataDome manager
+                        try:
+                            DataDomeManager._instance = None
+                        except:
+                            pass
+
+                        _gc.collect()
+
+                    except Exception as rot_err:
+                        log.warning(
+                            f"[{uid}] Rotation cleanup error: "
+                            f"{rot_err}"
+                        )
+
+                    # 4. Sleep (simulate Ctrl+C pause)
+                    log.info(
+                        f"[{uid}] ⏳ Sleeping "
+                        f"{SESSION_ROTATE_SLEEP}s..."
+                    )
+
+                    time.sleep(SESSION_ROTATE_SLEEP)
+
+                    # 5. Fresh executor = fresh sessions
+                    try:
+                        ex.shutdown(wait=False)
+                    except:
+                        pass
+
+                    ex = ThreadPoolExecutor(
+                        max_workers=MAX_WORKER_THREADS
+                    )
+
+                    _rotation_target += SESSION_ROTATE_EVERY
+                    _rotating = False
+
+                    log.info(
+                        f"[{uid}] ✅ New session started "
+                        f"(resume at {current_processed:,})"
+                    )
+
+                # Hint GC to reclaim StringIO/session objects
+                import gc as _gc
+                _gc.collect()
 
             else:
                 ex.shutdown(wait=False)
@@ -1624,86 +1872,385 @@ async def deliver_results(
 #  USER COMMANDS
 # ════════════════════════════════════════════
 async def cmd_start(update,context):
-    cfg=load_config(); tg=update.effective_user; uid=str(tg.id)
-    ud,_=get_or_create_user(uid,tg.username or "",tg.first_name or "")
+    cfg=load_config()
+    tg=update.effective_user
+    uid=str(tg.id)
 
-    if ud.get("banned") and not is_admin(tg.id,cfg):
+    ud,_=get_or_create_user(
+        uid,
+        tg.username or "",
+        tg.first_name or ""
+    )
+
+    # Process referral link
+    if context.args:
+
+        ref=context.args[0]
+
+        if ref.startswith("REF_"):
+
+            inviter=ref.replace("REF_","")
+
+            if inviter!=uid:
+
+                process_referral(
+                    inviter,
+                    uid
+                )
+
+                ud,_=get_or_create_user(
+                    uid,
+                    tg.username or "",
+                    tg.first_name or ""
+                )
+
+    if ud.get("banned") and not is_admin(
+        tg.id,
+        cfg
+    ):
+
         await update.message.reply_text(
             "🚫 <b>Access Suspended</b>\n\n"
             "Your account is restricted from using this bot.",
             parse_mode=ParseMode.HTML
         )
+
         return
 
-    if not ud.get("activated") and not is_admin(tg.id,cfg):
+    # FORCE CHANNEL CHECK
+    force_channel=cfg.get(
+        "force_channel",
+        ""
+    )
+
+    if (
+        force_channel
+        and not is_admin(
+            tg.id,
+            cfg
+        )
+    ):
+
+        force_channel=(
+            force_channel
+            .replace("@","")
+            .strip()
+        )
+
+        joined=False
+
+        try:
+
+            member=await context.bot.get_chat_member(
+                chat_id=f"@{force_channel}",
+                user_id=int(uid)
+            )
+
+            joined=member.status in (
+                ChatMember.MEMBER,
+                ChatMember.ADMINISTRATOR,
+                ChatMember.OWNER
+            )
+
+        except:
+
+            joined=False
+
+        if not joined:
+
+            kb=InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton(
+                        "📢 Join Channel",
+                        url=f"https://t.me/{force_channel}"
+                    )
+                ],
+                [
+                    InlineKeyboardButton(
+                        "✅ Verify",
+                        callback_data="verify_join"
+                    )
+                ]
+            ])
+
+            await update.message.reply_text(
+                "🔒 <b>Channel Verification Required</b>\n\n"
+                "Join the channel then press Verify.",
+                parse_mode=ParseMode.HTML,
+                reply_markup=kb
+            )
+
+            return
+
+    # Activation block
+    if not ud.get("activated") and not is_admin(
+        tg.id,
+        cfg
+    ):
+
+        me=await context.bot.get_me()
+
+        refs=ud.get(
+            "referrals",
+            0
+        )
+
+        ref_link=(
+            f"https://t.me/{me.username}"
+            f"?start=REF_{uid}"
+        )
+
         await update.message.reply_text(
             "🔑 <b>Activation Required</b>\n\n"
-            "Use <code>/redeem YOUR_KEY</code> to activate your access.",
+
+            "Use <code>/redeem YOUR_KEY</code> "
+            "to activate your access.",
+
             parse_mode=ParseMode.HTML
         )
+
         return
 
-    if not is_admin(tg.id,cfg) and check_key_expiry(uid):
+    if (
+        not is_admin(
+            tg.id,
+            cfg
+        )
+        and check_key_expiry(uid)
+    ):
+
         await update.message.reply_text(
             "⏰ <b>Subscription Expired</b>\n\n"
             "Please contact an administrator to renew your access.",
             parse_mode=ParseMode.HTML
         )
+
         return
 
-    if cfg.get("locked") and not is_admin(tg.id,cfg) and not ud.get("vip"):
+    if (
+        cfg.get("locked")
+        and not is_admin(
+            tg.id,
+            cfg
+        )
+        and not ud.get("vip")
+    ):
+
         await update.message.reply_text(
             "🔒 <b>Maintenance Mode Enabled</b>\n\n"
             "The bot is temporarily unavailable.",
             parse_mode=ParseMode.HTML
         )
+
         return
 
-    vt=" 👑 <b>VIP</b>" if ud.get("vip") else ""
-    at=" ⚙️ <b>ADMIN</b>" if is_admin(tg.id,cfg) else ""
+    vt=(
+        " 👑 <b>VIP</b>"
+        if ud.get("vip")
+        else ""
+    )
 
-    iv=ud.get("vip") or is_admin(tg.id,cfg)
-    lim=cfg.get("vip_limit") if iv else cfg.get("global_limit")
+    at=(
+        " ⚙️ <b>ADMIN</b>"
+        if is_admin(
+            tg.id,
+            cfg
+        )
+        else ""
+    )
 
-    ls=f"\n• Line Limit: <code>{lim:,}</code>" if lim else ""
+    iv=(
+        ud.get("vip")
+        or is_admin(
+            tg.id,
+            cfg
+        )
+    )
 
-    cd_on,cd_left=check_cooldown(uid,cfg)
+    lim=(
+        cfg.get("vip_limit")
+        if iv
+        else cfg.get("global_limit")
+    )
+
+    ls=(
+        f"\n• Line Limit: "
+        f"<code>{lim:,}</code>"
+        if lim
+        else ""
+    )
+
+    cd_on,cd_left=check_cooldown(
+        uid,
+        cfg
+    )
+
     cd_s=""
 
     if cd_on:
-        h,m_=int(cd_left//60),int(cd_left%60)
-        cd_s=f"\n• Cooldown: <code>{'%dh %dm'%(h,m_) if h else '%dm'%m_} remaining</code>"
 
-    exp_s="" if is_admin(tg.id,cfg) else f"\n• Key Expires: <code>{fmt_expiry(ud.get('key_expires_at'))}</code>"
+        h,m_=(
+            int(cd_left//60),
+            int(cd_left%60)
+        )
 
-    if is_admin(tg.id,cfg):
+        cd_s=(
+            "\n• Cooldown: "
+            f"<code>"
+            f"{'%dh %dm'%(h,m_) if h else '%dm'%m_}"
+            "</code>"
+        )
+
+    exp_s=(
+        ""
+        if is_admin(
+            tg.id,
+            cfg
+        )
+        else (
+            "\n• Key Expires: "
+            f"<code>"
+            f"{fmt_expiry(ud.get('key_expires_at'))}"
+            "</code>"
+        )
+    )
+
+    if is_admin(
+        tg.id,
+        cfg
+    ):
+
         kb=InlineKeyboardMarkup([
-            [InlineKeyboardButton("📂 Check Accounts",callback_data="start_check")],
-            [InlineKeyboardButton("⚙️ Admin Panel",callback_data="open_admin_panel")],
+            [
+                InlineKeyboardButton(
+                    "📂 Check Accounts",
+                    callback_data="start_check"
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    "⚙️ Admin Panel",
+                    callback_data="open_admin_panel"
+                )
+            ]
         ])
+
     else:
+
         kb=InlineKeyboardMarkup([
-            [InlineKeyboardButton("📂 Check Accounts",callback_data="start_check")]
+            [
+                InlineKeyboardButton(
+                    "📂 Check Accounts",
+                    callback_data="start_check"
+                )
+            ]
         ])
 
     m=await update.message.reply_text(
-        f"⚡ <b>Garena CODM Checker{vt}{at}</b>\n\n"
 
-        f"<b>Account Information</b>\n"
-        f"• User: <b>{tg.first_name}</b>\n"
-        f"• User ID: <code>{tg.id}</code>\n"
-        f"• Total Checked: <code>{ud.get('total_checked',0):,}</code>\n"
-        f"• Sessions: <code>{ud.get('sessions_count',0)}</code>"
+        f"⚡ <b>Garena CODM Checker"
+        f"{vt}{at}</b>\n\n"
+
+        "<b>Account Information</b>\n"
+
+        f"• User: "
+        f"<b>{tg.first_name}</b>\n"
+
+        f"• User ID: "
+        f"<code>{tg.id}</code>\n"
+
+        f"• Total Checked: "
+        f"<code>{ud.get('total_checked',0):,}</code>\n"
+
+        f"• Sessions: "
+        f"<code>{ud.get('sessions_count',0)}</code>"
+
         f"{ls}{cd_s}{exp_s}\n\n"
 
-        f"Press <b>Check Accounts</b> below to begin.",
+        "Press <b>Check Accounts</b> "
+        "below to begin.",
 
         reply_markup=kb,
         parse_mode=ParseMode.HTML
     )
 
     if m:
-        track(uid,m.message_id)
+
+        track(
+            uid,
+            m.message_id
+        )
+        
+async def verify_join(update,context):
+
+    q=update.callback_query
+
+    await q.answer()
+
+    cfg=load_config()
+
+    uid=str(q.from_user.id)
+
+    force_channel=cfg.get(
+        "force_channel",
+        ""
+    )
+
+    if not force_channel:
+        return
+
+    force_channel=(
+        force_channel
+        .replace("@","")
+        .strip()
+    )
+
+    joined=False
+
+    try:
+
+        member=await context.bot.get_chat_member(
+            chat_id=f"@{force_channel}",
+            user_id=q.from_user.id
+        )
+
+        joined=member.status in (
+            ChatMember.MEMBER,
+            ChatMember.ADMINISTRATOR,
+            ChatMember.OWNER
+        )
+
+    except:
+        joined=False
+
+    if not joined:
+
+        await q.answer(
+            "❌ Join the channel first.",
+            show_alert=True
+        )
+
+        return
+
+    try:
+        await q.message.delete()
+    except:
+        pass
+
+    fake=type(
+        "obj",
+        (),
+        {}
+    )()
+
+    fake.effective_user=q.from_user
+    fake.message=q.message
+    fake.effective_message=q.message
+
+    await cmd_start(
+        fake,
+        context
+    )
 
 async def cmd_redeem(update,context):
     cfg=load_config(); tg=update.effective_user; uid=str(tg.id)
@@ -3077,7 +3624,7 @@ async def on_callback(update,context):
         return
 
     # all others need gate
-    allowed,ud,users=await gate_cb(query,context)
+    allowed, cfg, u = await gate_cb(update, context)
     if not allowed: return
 
     if data=="start_check":
@@ -6005,6 +6552,7 @@ def main():
         # ── User ──────────────────────────────────────────────────────────
         application.add_handler(CommandHandler("start",           cmd_start))
         application.add_handler(CommandHandler("redeem",          cmd_redeem))
+        application.add_handler(CallbackQueryHandler(verify_join, pattern="^verify_join$"))
         application.add_handler(CommandHandler("stop",            cmd_stop))
         application.add_handler(CommandHandler("cancel",          cmd_cancel))
         application.add_handler(CommandHandler("hitson",          cmd_hits_on))
