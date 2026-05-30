@@ -1601,13 +1601,20 @@ def run_checker(uid,combo_file,result_folder,limit,threads,stop_event,
                             f"[{uid}] Checkpoint save error: {e}"
                         )
 
-                    # 2. Stop accepting new work
+                    # Soft rotation only
+                    log.info(
+                        f"[{uid}] ♻️ Refreshing sessions..."
+                    )
+
                     try:
-                        ex.shutdown(wait=False)
-                    except Exception as e:
-                        log.warning(
-                            f"[{uid}] Executor shutdown error: {e}"
-                        )
+                        # Clear thread-local sessions
+                        if hasattr(_dty_module, "_thread_local"):
+                            _dty_module._thread_local.__dict__.clear()
+                    except Exception:
+                        pass
+
+                    # Small pause to mimic restart
+                    time.sleep(SESSION_ROTATE_SLEEP)
 
                     # 3. Clear thread sessions / cookies
                     try:
@@ -1648,11 +1655,6 @@ def run_checker(uid,combo_file,result_folder,limit,threads,stop_event,
                     )
 
                     time.sleep(SESSION_ROTATE_SLEEP)
-
-                    # 5. Create fresh executor
-                    ex = ThreadPoolExecutor(
-                        max_workers=MAX_WORKER_THREADS
-                    )
 
                     _rotation_target += SESSION_ROTATE_EVERY
                     _rotating = False
