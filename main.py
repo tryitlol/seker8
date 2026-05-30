@@ -1573,7 +1573,7 @@ def run_checker(uid,combo_file,result_folder,limit,threads,stop_event,
 
 
                 # ─────────────────────────────────────────────
-                # SAFE SESSION REFRESH (NO CRASH)
+                # FAST + SAFE SESSION COOLDOWN
                 # ─────────────────────────────────────────────
                 try:
                     current_processed = done[0]
@@ -1589,30 +1589,20 @@ def run_checker(uid,combo_file,result_folder,limit,threads,stop_event,
 
                     try:
                         log.info(
-                            f"[{uid}] 🔄 Refreshing session "
+                            f"[{uid}] 🔄 Cooldown "
                             f"({current_processed:,} processed)"
                         )
 
-                        # Save checkpoint FIRST
+                        # Save checkpoint immediately
                         try:
                             with _ckpt_lock:
                                 _flush_checkpoint()
                         except Exception as e:
                             log.warning(
-                                f"[{uid}] checkpoint flush error: {e}"
+                                f"[{uid}] checkpoint error: {e}"
                             )
 
-                        # Clear thread-local sessions ONLY
-                        # Forces fresh requests.Session() next request
-                        try:
-                            if hasattr(_dty_module, "_thread_local"):
-                                _dty_module._thread_local.__dict__.clear()
-                        except Exception as e:
-                            log.warning(
-                                f"[{uid}] session clear error: {e}"
-                            )
-
-                        # Cooldown (mimic Ctrl+C restart)
+                        # Pause only
                         log.info(
                             f"[{uid}] ⏳ Sleeping "
                             f"{SESSION_ROTATE_SLEEP}s..."
@@ -1624,13 +1614,13 @@ def run_checker(uid,combo_file,result_folder,limit,threads,stop_event,
                         _rotation_target += SESSION_ROTATE_EVERY
 
                         log.info(
-                            f"[{uid}] ✅ Session refreshed"
+                            f"[{uid}] ✅ Resuming checker"
                         )
 
                     except Exception as rot_err:
-                        # NEVER crash checker
+                        # Never kill checker
                         log.exception(
-                            f"[{uid}] refresh failed: {rot_err}"
+                            f"[{uid}] cooldown error: {rot_err}"
                         )
 
                     finally:
